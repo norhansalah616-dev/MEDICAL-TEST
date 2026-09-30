@@ -6,8 +6,10 @@
     <title>الماسح الذكي المدمج لتحضيرات التحاليل الطبية</title>
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
-    <!-- استدعاء ملف التحاليل الإضافية التخصصية -->
+    
+    <!-- الربط مع ملف التحاليل الإضافية التخصصية DotCare -->
     <script src="dotcare.js"></script>
+
     <style>
         :root {
             --bg-gradient: linear-gradient(180deg, #0d5c58 0%, #063836 100%);
@@ -18,13 +20,24 @@
             --text-sub: #b2dfdb;
         }
 
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Cairo', sans-serif; }
+        /* حماية لمنع تحديد ونسخ محتوى الصفحة */
+        * { 
+            box-sizing: border-box; 
+            margin: 0; 
+            padding: 0; 
+            font-family: 'Cairo', sans-serif;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
 
         body {
             background: var(--bg-gradient);
             min-height: 100vh;
             color: var(--text-main);
-            padding: 20px 15px 60px;
+            padding: 20px 15px 80px;
+            position: relative;
         }
 
         .container { max-width: 550px; margin: 0 auto; }
@@ -65,7 +78,7 @@
         input[type="file"] { display: none; }
 
         #previewContainer { display: none; margin-top: 15px; text-align: center; }
-        #imagePreview { max-width: 100%; max-height: 240px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.2); }
+        #imagePreview { max-width: 100%; max-height: 240px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.2); pointer-events: none; }
 
         .rotate-bar {
             display: flex;
@@ -123,11 +136,12 @@
         .source-badge {
             display: inline-block;
             font-size: 0.75rem;
-            padding: 2px 8px;
-            border-radius: 4px;
+            padding: 4px 10px;
+            border-radius: 6px;
             margin-bottom: 12px;
             background: rgba(255, 255, 255, 0.15);
             color: var(--text-sub);
+            font-weight: 700;
         }
 
         .test-result-card {
@@ -138,6 +152,8 @@
             margin-bottom: 12px;
             border-right: 6px solid var(--primary);
             box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+            -webkit-user-select: text;
+            user-select: text;
         }
 
         .test-result-card.warning-female { border-right-color: #e91e63; }
@@ -154,14 +170,36 @@
             font-size: 0.82rem;
             display: inline-block;
         }
+
+        /* تذييل حقوق الملكية */
+        footer {
+            margin-top: 35px;
+            text-align: center;
+            border-top: 1px solid rgba(255, 255, 255, 0.15);
+            padding-top: 15px;
+            font-size: 0.82rem;
+            color: var(--text-sub);
+        }
+
+        footer a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 700;
+            transition: color 0.2s;
+        }
+
+        footer a:hover {
+            color: var(--accent);
+            text-decoration: underline;
+        }
     </style>
 </head>
-<body>
+<body oncontextmenu="return false;" ondragstart="return false;" onselectstart="return false;">
 
 <div class="container">
     <header>
         <h1>الماسح الذكي لتحضيرات التحاليل</h1>
-        <p>نظام هجين متقدم (ذكاء اصطناعي للرؤية + ماسح محلي احتياطي)</p>
+        <p>فحص مباشر عبر معايير DotCare مدعوماً بالذكاء الاصطناعي</p>
     </header>
 
     <div class="controls-card">
@@ -184,7 +222,7 @@
             <div class="rotate-bar">
                 <button class="btn-sub" onclick="rotateManual(-90)">🔄 تدوير يسار</button>
                 <button class="btn-sub" onclick="rotateManual(90)">🔄 تدوير يمين</button>
-                <button class="btn-sub" style="background: var(--accent);" onclick="startHybridScan()">🔍 إعادة الفحص</button>
+                <button class="btn-sub" style="background: var(--accent);" onclick="startDirectPriorityScan()">🔍 إعادة الفحص</button>
             </div>
         </div>
     </div>
@@ -193,7 +231,7 @@
         <div class="loading-card">
             <div class="spinner"></div>
             <h3>جاري الفحص...</h3>
-            <p id="loadingMsg" style="font-size: 0.85rem; color: #b2dfdb;">تحليل الصورة واستخراج شروط التحاليل...</p>
+            <p id="loadingMsg" style="font-size: 0.85rem; color: #b2dfdb;">البحث في قاعدة بيانات DotCare أولاً...</p>
         </div>
     </div>
 
@@ -202,11 +240,38 @@
         <h3>التحاليل المكتشفة وشروط التحضير:</h3>
         <div id="resultsList"></div>
     </div>
+
+    <footer>
+        <p>© جميع الحقوق محفوظة | تطوير: <a href="https://nourhan-salah.github.io/nour-portfolio/?fbclid=IwVERDUAUkwOlleHRuA2FlbQIxMABwZG9mAXNydGMGYXBwX2lkDDM1MDY4NTUzMTcyOAABHsaIO844ow-bJ2Vt8YZu7IGR-mvxl4y7vc3tKWOJz9f9nCc5Cy7K8wvr9Gw4_aem_ZfZ8NWbfFDZnPxrsO1x0Kg" target="_blank" rel="noopener noreferrer">نورهان صلاح (Nourhan Salah)</a></p>
+    </footer>
 </div>
 
 <canvas id="procCanvas" style="display:none;"></canvas>
 
 <script>
+    // ==========================================
+    // 🛡️ حماية الكود المصدري من الاستعراض
+    // ==========================================
+    document.addEventListener('keydown', function (e) {
+        if (
+            e.keyCode === 123 || 
+            (e.ctrlKey && e.shiftKey && (e.keyCode === 73 || e.keyCode === 74 || e.keyCode === 67)) || 
+            (e.ctrlKey && (e.keyCode === 85 || e.keyCode === 83))
+        ) {
+            e.preventDefault();
+            return false;
+        }
+    });
+
+    setInterval(function() {
+        (function() {
+            return false;
+        }['constructor']('debugger')());
+    }, 1500);
+
+    // ==========================================
+    // محرك الفحص والبيانات
+    // ==========================================
     const _kPart1 = "QVEuQWI4Uk42STFPTkh4";
     const _kPart2 = "Y3JRUm8xMkowLTlNUVBM";
     const _kPart3 = "bm5vSTluZXhNTEhhckJY";
@@ -217,7 +282,7 @@
     let currentAngle = 0;
     let currentFile = null;
 
-    // --- التحاليل الأكثر طلباً وشيوعاً (الأساسية المباشرة في index.html) ---
+    // التحاليل الأكثر طلباً وشيوعاً المباشرة داخل index.html
     const primaryCommonRules = [
         {
             name: "فيتامين د (Vitamin D / 25-OH) [204108]",
@@ -353,16 +418,11 @@
         }
     ];
 
-    // دمج الفحوصات الأساسية في هذا الملف مع الفحوصات الإضافية القادمة من dotcare.js
+    // دمج قواعد التحاليل من القائمة الأساسية مع مصفوفة ملف dotcare.js
     const medicalRules = [
         ...primaryCommonRules,
         ...(typeof DOTCARE_EXTRA_TESTS !== 'undefined' ? DOTCARE_EXTRA_TESTS : [])
     ];
-
-    function findDotCareTest(query) {
-        if (!query) return null;
-        return medicalRules.find(item => item.test(query));
-    }
 
     function loadFile(input) {
         if (!input.files || !input.files[0]) return;
@@ -373,7 +433,7 @@
                 currentAngle = 0;
                 applyCanvasTransform();
                 document.getElementById('previewContainer').style.display = 'block';
-                startHybridScan();
+                startDirectPriorityScan();
             };
             rawImg.src = e.target.result;
         };
@@ -408,21 +468,48 @@
         document.getElementById('imagePreview').src = cvs.toDataURL();
     }
 
-    async function startHybridScan() {
+    // محرك الفحص: البحث في DotCare أولاً ثم التحول لـ Gemini عند الحاجة
+    async function startDirectPriorityScan() {
         const overlay = document.getElementById('loadingOverlay');
         const msg = document.getElementById('loadingMsg');
         overlay.style.display = 'flex';
 
         const cvs = document.getElementById('procCanvas');
-        const base64Data = cvs.toDataURL('image/jpeg', 0.85).split(',')[1];
-        const mimeType = 'image/jpeg';
+        const isFemale = document.querySelector('input[name="gender"]:checked').value === 'أنثى';
 
-        msg.innerText = "فحص متقدم بالذكاء الاصطناعي (Gemini Vision)...";
-        const aiSuccess = await tryGeminiVision(base64Data, mimeType);
+        // البحث السريع المحلي عبر Tesseract لمطابقة بنك DotCare أولاً
+        msg.innerText = "⚡ جاري البحث السريع في بنك تحاليل DotCare...";
+        let dotCareFound = false;
 
-        if (!aiSuccess) {
-            msg.innerText = "التحول التلقائي للماسح المحلي وقواعد DotCare...";
-            await runLocalTesseractFallback();
+        try {
+            const result = await Tesseract.recognize(cvs, 'eng');
+            const extractedText = result.data.text;
+
+            const matched = medicalRules.filter(rule => rule.test(extractedText));
+
+            if (matched.length > 0) {
+                const formatted = matched.map(item => ({
+                    test_name: item.name,
+                    instructions: item.getNotes(isFemale),
+                    is_critical_female: item.name.includes("Vitamin D") && isFemale
+                }));
+                displayResults(formatted, "⚡ تم التطابق الفوري عبر قاعدة بيانات نظام DotCare");
+                dotCareFound = true;
+            }
+        } catch (e) {
+            console.warn("DotCare Local Scanner warning:", e);
+        }
+
+        // إذا لم يعثر على تطابق في القواعد المحلية، يتحول لمحرك Gemini Vision
+        if (!dotCareFound) {
+            msg.innerText = "🔍 تحليل دقيق بالذكاء الاصطناعي (Gemini Vision)...";
+            const base64Data = cvs.toDataURL('image/jpeg', 0.85).split(',')[1];
+            const mimeType = 'image/jpeg';
+            const aiSuccess = await tryGeminiVision(base64Data, mimeType);
+
+            if (!aiSuccess) {
+                displayResults([], "لم يتم العثور على تحاليل مطابقة، يرجى تدوير الصورة لتصبح أفقية والضغط على (إعادة الفحص).");
+            }
         }
 
         overlay.style.display = 'none';
@@ -472,7 +559,7 @@
                     text = text.replace(/```json/g, '').replace(/```/g, '').trim();
                     const results = JSON.parse(text);
                     if (Array.isArray(results) && results.length > 0) {
-                        displayResults(results, "✨ تم الفحص بنجاح عبر محرك الذكاء الاصطناعي (Gemini Vision)");
+                        displayResults(results, "✨ تم الفحص بالذكاء الاصطناعي (Gemini Vision)");
                         return true;
                     }
                 }
@@ -481,30 +568,6 @@
             }
         }
         return false;
-    }
-
-    async function runLocalTesseractFallback() {
-        const cvs = document.getElementById('procCanvas');
-        try {
-            const result = await Tesseract.recognize(cvs, 'eng');
-            const extractedText = result.data.text;
-
-            const isFemale = document.querySelector('input[name="gender"]:checked').value === 'أنثى';
-            const matched = medicalRules.filter(rule => rule.test(extractedText));
-
-            if (matched.length > 0) {
-                const formatted = matched.map(item => ({
-                    test_name: item.name,
-                    instructions: item.getNotes(isFemale),
-                    is_critical_female: item.name.includes("Vitamin D") && isFemale
-                }));
-                displayResults(formatted, "🛡️ تم الفحص عبر المحرك المحلي الاحتياطي وقاعدة DotCare");
-            } else {
-                displayResults([], "المحرك المحلي لم يكتشف تحاليل واضحة، يرجى تعديل زاوية الصورة وإعادة الفحص.");
-            }
-        } catch (e) {
-            alert("تعذر قراءة الصورة بالوسيلتين. يرجى التأكد من جودة الصورة.");
-        }
     }
 
     function displayResults(tests, badgeText) {
