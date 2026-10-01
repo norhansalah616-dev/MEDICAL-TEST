@@ -1,7 +1,6 @@
 // ============================================================================
-// بنك تحاليل DotCare التخصصية الإضافية (dotcare.js)
+// بنك تحاليل DotCare التخصصية الإضافية
 // ============================================================================
-
 const DOTCARE_EXTRA_TESTS = [
     {
         name: "فوسفاتيز حمضي (ACID PHOSPHATASE) [204003]",
@@ -1039,3 +1038,206 @@ const DOTCARE_EXTRA_TESTS = [
         getNotes: () => `إحضار الشرائح المصبوغة مع قوالب البرافين والتقرير؛ للحصول على رأي استشاري ثانٍ وتأكيد التشخيص النسيجي للأورام.`
     }
 ];
+
+// ============================================================================
+// محرك المعالجة المسبقة للصورة (إزالة الحواف السوداء + رفع التباين + توضيح الحبر)
+// ============================================================================
+async function preprocessMedicalImage(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = (e) => {
+            const img = new Image();
+            img.src = e.target.result;
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+
+                // تحجيم ذكي للصورة لحل مشكلة البكسلة وتخفيف عبء الإرسال
+                const MAX_DIM = 2000;
+                let w = img.width;
+                let h = img.height;
+
+                if (w > h && w > MAX_DIM) {
+                    h = Math.round((h * MAX_DIM) / w);
+                    w = MAX_DIM;
+                } else if (h > MAX_DIM) {
+                    w = Math.round((w * MAX_DIM) / h);
+                    h = MAX_DIM;
+                }
+
+                canvas.width = w;
+                canvas.height = h;
+                ctx.drawImage(img, 0, 0, w, h);
+
+                const imgData = ctx.getImageData(0, 0, w, h);
+                const data = imgData.data;
+
+                // كشف الحواف وعزل الإطارات السوداء
+                let minX = w, minY = h, maxX = 0, maxY = 0;
+                const blackThreshold = 35;
+
+                for (let y = 0; y < h; y += 4) {
+                    for (let x = 0; x < w; x += 4) {
+                        const idx = (y * w + x) * 4;
+                        if (data[idx] > blackThreshold || data[idx + 1] > blackThreshold || data[idx + 2] > blackThreshold) {
+                            if (x < minX) minX = x;
+                            if (x > maxX) maxX = x;
+                            if (y < minY) minY = y;
+                            if (y > maxY) maxY = y;
+                        }
+                    }
+                }
+
+                // رفع التباين لإبراز حبر الروشتة وعزل بهتان التصوير
+                const contrast = 40;
+                const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+
+                for (let i = 0; i < data.length; i += 4) {
+                    const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+                    const enhanced = Math.min(255, Math.max(0, factor * (gray - 128) + 128));
+                    data[i] = enhanced;
+                    data[i + 1] = enhanced;
+                    data[i + 2] = enhanced;
+                }
+                ctx.putImageData(imgData, 0, 0);
+
+                const cropWidth = Math.max(maxX - minX, 100);
+                const cropHeight = Math.max(maxY - minY, 100);
+
+                const finalCanvas = document.createElement('canvas');
+                finalCanvas.width = cropWidth;
+                finalCanvas.height = cropHeight;
+                const finalCtx = finalCanvas.getContext('2d');
+
+                finalCtx.drawImage(
+                    canvas,
+                    minX, minY, cropWidth, cropHeight,
+                    0, 0, cropWidth, cropHeight
+                );
+
+                resolve(finalCanvas.toDataURL('image/jpeg', 0.9));
+            };
+            img.onerror = reject;
+        };
+    });
+}
+
+// ============================================================================
+// محرك الذكاء الاصطناعي لفحص الخط اليدوي والربط مع قاعدة التحاليل
+// ============================================================================
+async function scanPrescriptionWithAI(imageFile, apiKey) {
+    const loadingElem = document.querySelector('.loading') || document.querySelector('[class*="loading"]') || document.getElementById('loading');
+    if (loadingElem) loadingElem.style.display = 'block';
+
+    try {
+        const base64Url = await preprocessMedicalImage(imageFile);
+        const rawBase64 = base64Url.split(',')[1];
+
+        // عينة من الأسماء لتوجيه النموذج
+        const knownTestNames = DOTCARE_EXTRA_TESTS.map(t => t.name).slice(0, 80).join(", ");
+
+        const systemPrompt = `
+أنت خبير قراءة روشتات طبية متخصص في فك الخطوط اليدوية المعقدة والسيئة للأطباء.
+مهمتك استخراج التحاليل الطبية المكتوبة باليد مهما كان الخط سيئاً، أو الصورة مقلوبة/أفقية/رأسية، أو باهتة ومبكسلة.
+
+المرجع الطبي المعتمد لديك يشمل:
+${knownTestNames} ... وغيرها.
+
+تعليمات صارمة:
+1. اقرأ الصورة بغض النظر عن اتجاهها (مقلوبة، مائلة، رأسية).
+2. استخدم السياق الطبي لفك الرموز المكتوبة بخط سيئ وشخبطة الأطباء.
+3. أخرج النتيجة بتنسيق JSON فقط ولا تكتب أي كلام قبله أو بعده:
+{
+  "matches": ["اسم التحليل أو الكود المكتشف بالإنجليزية أو العربية"]
+}
+`;
+
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{
+                    parts: [
+                        { text: systemPrompt },
+                        { inline_data: { mime_type: "image/jpeg", data: rawBase64 } }
+                    ]
+                }],
+                generationConfig: {
+                    response_mime_type: "application/json",
+                    temperature: 0.1
+                }
+            })
+        });
+
+        const resData = await response.json();
+        const outputJson = JSON.parse(resData.candidates[0].content.parts[0].text);
+        const detectedKeywords = outputJson.matches || [];
+
+        // مطابقة الكلمات المكتشفة مع مصفوفة DOTCARE_EXTRA_TESTS عبر الـ regex
+        const matchedTests = [];
+        DOTCARE_EXTRA_TESTS.forEach(dbItem => {
+            for (const word of detectedKeywords) {
+                if (dbItem.test(word) || word.toLowerCase().includes(dbItem.name.toLowerCase())) {
+                    if (!matchedTests.some(r => r.name === dbItem.name)) {
+                        matchedTests.push({
+                            name: dbItem.name,
+                            notes: dbItem.getNotes()
+                        });
+                    }
+                    break;
+                }
+            }
+        });
+
+        renderPrescriptionResults(matchedTests, detectedKeywords);
+
+    } catch (err) {
+        console.error("Scanning Error:", err);
+        alert("حدث خطأ أثناء فحص الروشتة. يرجى التأكد من الـ API Key وجودة الصورة.");
+    } finally {
+        if (loadingElem) loadingElem.style.display = 'none';
+    }
+}
+
+// ============================================================================
+// عرض النتائج في واجهة الموقع
+// ============================================================================
+function renderPrescriptionResults(matchedTests, rawKeywords) {
+    const resultsContainer = document.querySelector('.results') || document.querySelector('[class*="result"]') || document.getElementById('resultsContainer');
+    if (!resultsContainer) return;
+
+    resultsContainer.innerHTML = '';
+
+    if (matchedTests.length === 0) {
+        resultsContainer.innerHTML = `
+            <div style="padding: 15px; background: #fff3cd; color: #856404; border-radius: 8px; direction: rtl; text-align: right;">
+                لم نتمكن من مطابقة شروط DotCare بدقة. الكلمات المكتشفة مبدئياً: 
+                <b>${rawKeywords.join(', ') || 'لا توجد نصوص واضحة'}</b>
+            </div>
+        `;
+        return;
+    }
+
+    matchedTests.forEach(item => {
+        const card = document.createElement('div');
+        card.style.cssText = `
+            background: #ffffff;
+            border-right: 5px solid #007bff;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+            margin-bottom: 12px;
+            padding: 15px;
+            border-radius: 6px;
+            direction: rtl;
+            text-align: right;
+        `;
+
+        card.innerHTML = `
+            <h4 style="margin: 0 0 8px 0; color: #007bff; font-size: 1.05rem;">${item.name}</h4>
+            <p style="margin: 0; color: #333; line-height: 1.6; font-size: 0.95rem;">
+                <strong>تعليمات التحضير:</strong> ${item.notes}
+            </p>
+        `;
+        resultsContainer.appendChild(card);
+    });
+}
