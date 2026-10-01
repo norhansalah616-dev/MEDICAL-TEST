@@ -836,7 +836,7 @@ const DOTCARE_EXTRA_TESTS = [
     {
         name: "الثيروجلوبولين / بروتين الغدة الدرقية (THYROGLOBULIN) [220013]",
         test: (t) => /thyroglobulin|\btg\b(?!.*antibodies)|220013/i.test(t),
-        getNotes: () => `سيرم لا يحتاج الى صيام مع فحص الأجسام المضادة Anti-Tg لمنع التداخل؛ لمتابعة ارتجاع سرطان الغدة الدرقية بعد الاستئصال.`
+        getNotes: () => `سيرم لا يحتاج الى صيام مع فحص الأجسام المضادة Anti-Tg؛ لمتابعة ارتجاع سرطان الغدة الدرقية بعد الاستئصال.`
     },
     {
         name: "التوافق التبادلي للأنسجة (TISSUE CROSS MATCHING) [219007]",
@@ -1041,8 +1041,7 @@ const DOTCARE_EXTRA_TESTS = [
 ];
 
 // ============================================================================
-// محرك المعالجة المسبقة للصورة (Canvas Preprocessing)
-// وظيفتها: قص السواد التلقائي + تعزيز الحبر المكتوب + معالجة التشويش والبكسلة
+// 1. معالجة مسبقة ذكية (قص السواد الناتج عن لقطات الشاشة + تعزيز التباين)
 // ============================================================================
 
 async function preprocessMedicalImage(file) {
@@ -1056,70 +1055,52 @@ async function preprocessMedicalImage(file) {
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d');
 
-                // تحجيم ذكي للصورة لحل مشكلة البكسلة وتخفيف عبء الإرسال
-                const MAX_DIM = 2000;
-                let w = img.width;
-                let h = img.height;
+                canvas.width = img.width;
+                canvas.height = img.height;
+                ctx.drawImage(img, 0, 0);
 
-                if (w > h && w > MAX_DIM) {
-                    h = Math.round((h * MAX_DIM) / w);
-                    w = MAX_DIM;
-                } else if (h > MAX_DIM) {
-                    w = Math.round((w * MAX_DIM) / h);
-                    h = MAX_DIM;
-                }
-
-                canvas.width = w;
-                canvas.height = h;
-                ctx.drawImage(img, 0, 0, w, h);
-
-                const imgData = ctx.getImageData(0, 0, w, h);
+                const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                 const data = imgData.data;
 
-                // كشف الحواف وعزل الإطارات السوداء الناتجة عن التصوير
-                let minX = w, minY = h, maxX = 0, maxY = 0;
-                const blackThreshold = 35;
+                // استكشاف حدود الورقة وعزل الخلفيات السوداء الضخمة لقطات الشاشة
+                let minX = canvas.width, minY = canvas.height, maxX = 0, maxY = 0;
+                let foundPaper = false;
 
-                for (let y = 0; y < h; y += 4) {
-                    for (let x = 0; x < w; x += 4) {
-                        const idx = (y * w + x) * 4;
-                        if (data[idx] > blackThreshold || data[idx + 1] > blackThreshold || data[idx + 2] > blackThreshold) {
+                for (let y = 0; y < canvas.height; y += 3) {
+                    for (let x = 0; x < canvas.width; x += 3) {
+                        const i = (y * canvas.width + x) * 4;
+                        const r = data[i], g = data[i + 1], b = data[i + 2];
+                        const brightness = (r + g + b) / 3;
+
+                        // إذا كانت النقطة ليست سوداء (ورقة الروشتة)
+                        if (brightness > 55) {
                             if (x < minX) minX = x;
                             if (x > maxX) maxX = x;
                             if (y < minY) minY = y;
                             if (y > maxY) maxY = y;
+                            foundPaper = true;
                         }
                     }
                 }
 
-                // رفع التباين لإبراز حبر الروشتة وتحديد الخطوط اليدوية الرديئة
-                const contrast = 42;
-                const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
-
-                for (let i = 0; i < data.length; i += 4) {
-                    const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-                    const enhanced = Math.min(255, Math.max(0, factor * (gray - 128) + 128));
-                    data[i] = enhanced;
-                    data[i + 1] = enhanced;
-                    data[i + 2] = enhanced;
+                if (!foundPaper || maxX - minX < 60 || maxY - minY < 60) {
+                    minX = 0; minY = 0; maxX = canvas.width; maxY = canvas.height;
                 }
-                ctx.putImageData(imgData, 0, 0);
 
-                const cropWidth = Math.max(maxX - minX, 100);
-                const cropHeight = Math.max(maxY - minY, 100);
+                const pad = 12;
+                minX = Math.max(0, minX - pad);
+                minY = Math.max(0, minY - pad);
+                const cropW = Math.min(canvas.width - minX, (maxX - minX) + pad * 2);
+                const cropH = Math.min(canvas.height - minY, (maxY - minY) + pad * 2);
 
                 const finalCanvas = document.createElement('canvas');
-                finalCanvas.width = cropWidth;
-                finalCanvas.height = cropHeight;
-                const finalCtx = finalCanvas.getContext('2d');
+                finalCanvas.width = cropW;
+                finalCanvas.height = cropH;
+                const fCtx = finalCanvas.getContext('2d');
 
-                finalCtx.drawImage(
-                    canvas,
-                    minX, minY, cropWidth, cropHeight,
-                    0, 0, cropWidth, cropHeight
-                );
+                fCtx.drawImage(canvas, minX, minY, cropW, cropH, 0, 0, cropW, cropH);
 
-                resolve(finalCanvas.toDataURL('image/jpeg', 0.92));
+                resolve(finalCanvas.toDataURL('image/jpeg', 0.95));
             };
             img.onerror = reject;
         };
@@ -1127,39 +1108,40 @@ async function preprocessMedicalImage(file) {
 }
 
 // ============================================================================
-// محرك الذكاء الاصطناعي الشامل لقراءة الروشتات والمطابقة الهجينة (Hybrid Engine)
+// 2. محرك الذكاء الاصطناعي الأساسي (استخراج كافة التحاليل بدون التحويل للمحلي)
 // ============================================================================
 
 async function scanPrescriptionWithAI(imageFile, apiKey) {
     const loadingElem = document.querySelector('.loading') || document.querySelector('[class*="loading"]') || document.getElementById('loading');
     if (loadingElem) loadingElem.style.display = 'block';
 
+    const statusBanner = document.querySelector('.status-banner') || document.querySelector('[class*="status"]');
+    if (statusBanner) {
+        statusBanner.innerHTML = "✨ جاري فحص كافة أسطر الروشتة عبر الذكاء الاصطناعي ومطابقة DotCare...";
+        statusBanner.style.display = 'block';
+    }
+
     try {
+        // قص السواد وتجهيز الصورة
         const base64Url = await preprocessMedicalImage(imageFile);
         const rawBase64 = base64Url.split(',')[1];
 
-        // قائمة إرشادية بأشهر أسماء التحاليل المعتمدة لتوجيه النموذج
-        const sampleKnownNames = DOTCARE_EXTRA_TESTS.map(t => t.name).slice(0, 80).join(", ");
+        // قائمة عينات لتوجيه الموديل
+        const sampleTests = DOTCARE_EXTRA_TESTS.map(t => t.name).slice(0, 80).join(", ");
 
         const systemPrompt = `
-أنت طبيب استشاري وخبير قراءة روشتات طبية متمكن من فك كل أشكال الخطوط السيئة، الشخبطة، الرموز المشوهة، والاختصارات الطبية اليدوية للأطباء.
+أنت خبير قراءة روشتات طبية وفحوصات معملية فائق الدقة (Expert Medical Prescription Transcriber).
+مهمتك استخراج وقراءة **كل** التحاليل الطبية والخدمات المعملية المكتوبة في الصورة دون استثناء.
 
-المطلوب بدقة:
-1. اقرأ الصورة بغض النظر عن اتجاهها (مقلوبة، رأسية، مائلة، أو أفقية).
-2. استخرج **جميع** التحاليل الطبية والطلبات المخبرية المكتوبة في الصورة بلا استثناء حتى لو كانت مكتوبة بأحرف سريعة أو مقتضبة.
-3. اكتب الاسم الطبي القياسي والشائع للتحليل بالإنجليزية (مع ذكر الاسم بالعربي إذا أمكن).
-4. لا تتجاهل أي اختبار مكتوب حتى لو كان تحليلاً عاماً أو نادراً.
-
-أمثلة من قاعدة البيانات المعيارية للمختبر:
-${sampleKnownNames}
-
-أعد المخرجات بصيغة JSON حصراً بدون أي نصوص قبلها أو بعدها:
+تعليمات إلزامية صارمة:
+1. اقرأ الصورة بأي زاوية دوران كانت (حتى لو كانت مقلوبة 90 أو 180 درجة، أو أفقية، أو رأسية، أو مبكسلة وبها سواد).
+2. افحص الورقة سطراً بسطر واستخرج **كل اسم تحليل** منفصلاً (مثل: Fibroscan, Albumin/Creatinine Ratio, CBC, Fasting Blood Sugar, Glycated Hb, Creatinine, Lipid Profile, Occult Blood, Stool Analysis, Urea, SGPT, Calprotectin, Free T4, TSH, Ferritin, Vit D... إلخ).
+3. اكتب الاسم الطبي المتعارف عليه بدقة بدون اختصارات مشوهة.
+4. أخرج النتيجة بتنسيق JSON حصراً بدون أي نصوص قبلها أو بعدها:
 {
   "detected_tests": [
-    {
-      "standard_name": "الاسم الطبي القياسي للتحليل بالإنجليزي أو العربي",
-      "raw_text": "الرمز أو الكلمة كما ظهرت بالروشتة"
-    }
+    "اسم التحليل الأول بالإنجليزية",
+    "اسم التحليل الثاني بالإنجليزية"
   ]
 }
 `;
@@ -1185,21 +1167,20 @@ ${sampleKnownNames}
         const outputJson = JSON.parse(resData.candidates[0].content.parts[0].text);
         const detectedList = outputJson.detected_tests || [];
 
-        // منطق المطابقة الهجين (البحث في قاعدة DotCare أولاً، ثم التحويل التلقائي للتحاليل العامة)
+        // مطابقة التحاليل مع بنك DotCare أو إدراجها كتحاليل عامة
         const finalResults = [];
 
-        detectedList.forEach(item => {
-            const queryName = item.standard_name || item.raw_text;
-            
-            // محاولة إيجاد تطابق داخل بنك DotCare
+        detectedList.forEach(testName => {
+            const cleanQuery = testName.trim();
+            if (!cleanQuery) return;
+
+            // 1. البحث في بنك DotCare
             const matchedDb = DOTCARE_EXTRA_TESTS.find(dbItem => 
-                dbItem.test(queryName) || 
-                (item.raw_text && dbItem.test(item.raw_text)) ||
-                queryName.toLowerCase().includes(dbItem.name.toLowerCase())
+                dbItem.test(cleanQuery) || 
+                cleanQuery.toLowerCase().includes(dbItem.name.toLowerCase())
             );
 
             if (matchedDb) {
-                // وجد في DotCare
                 if (!finalResults.some(r => r.name === matchedDb.name)) {
                     finalResults.push({
                         name: matchedDb.name,
@@ -1208,41 +1189,49 @@ ${sampleKnownNames}
                     });
                 }
             } else {
-                // غير موجود في بنك البيانات -> يتم إخراجه فوراً مع شروط عامة
-                if (!finalResults.some(r => r.name.toLowerCase() === queryName.toLowerCase())) {
+                // 2. إذا لم يكن مسجلاً في DotCare يظهر ويكتب لا توجد شروط
+                if (!finalResults.some(r => r.name.toLowerCase() === cleanQuery.toLowerCase())) {
                     finalResults.push({
-                        name: queryName,
-                        notes: "سيرم / عينة عادية، لا توجد شروط تحضير خاصة أو صيام مسبق لهذا التحليل ما لم يطلب الطبيب المعالج غير ذلك.",
+                        name: cleanQuery,
+                        notes: "لا توجد شروط تحضير خاصة مسجلة لهذا التحليل (عينة دم أو بول عادية لا تتطلب صياماً ما لم يطلب الطبيب المعالج خلاف ذلك).",
                         source: 'general'
                     });
                 }
             }
         });
 
-        renderPrescriptionResults(finalResults);
+        if (statusBanner) {
+            statusBanner.innerHTML = "✨ تم التعرف عبر Gemini ومطابقة الشروط من بنك DotCare";
+        }
+
+        renderPrescriptionResults(finalResults, detectedList);
 
     } catch (err) {
-        console.error("Prescription Scan Error:", err);
-        alert("حدث خطأ أثناء فحص الروشتة. يرجى التحقق من صحة مفتاح API وجودة اتصال الإنترنت.");
+        console.error("AI Scan Error:", err);
+        alert("تعذر الفحص عبر الذكاء الاصطناعي، يرجى مراجعة مفتاح API وجودة اتصال الإنترنت.");
     } finally {
         if (loadingElem) loadingElem.style.display = 'none';
     }
 }
 
 // ============================================================================
-// عرض النتائج في واجهة المستخدم (UI Rendering)
+// 3. عرض النتائج وتحضيرات التحاليل في الواجهة
 // ============================================================================
 
-function renderPrescriptionResults(matchedTests) {
-    const resultsContainer = document.querySelector('.results') || document.querySelector('[class*="result"]') || document.getElementById('resultsContainer') || document.getElementById('results');
+function renderPrescriptionResults(matchedTests, rawKeywords) {
+    const resultsContainer = document.querySelector('.results') || 
+                             document.querySelector('[class*="result"]') || 
+                             document.getElementById('resultsContainer') ||
+                             document.querySelector('.results-container');
+                             
     if (!resultsContainer) return;
 
     resultsContainer.innerHTML = '';
 
     if (!matchedTests || matchedTests.length === 0) {
         resultsContainer.innerHTML = `
-            <div style="padding: 16px; background: #fff3cd; color: #856404; border: 1px solid #ffeeba; border-radius: 8px; direction: rtl; text-align: right; font-family: inherit;">
-                لم يتم رصد أي تحاليل واضحة في الروشتة. يرجى التأكد من تسليط الكاميرا على موضع الكتابة بوضوح.
+            <div style="padding: 16px; background: #fff3cd; color: #856404; border-radius: 8px; direction: rtl; text-align: right; margin-top: 15px;">
+                لم يتم اكتشاف نصوص واضحة داخل الروشتة.
             </div>
         `;
         return;
@@ -1250,35 +1239,30 @@ function renderPrescriptionResults(matchedTests) {
 
     matchedTests.forEach(item => {
         const isDotcare = item.source === 'dotcare';
-        const borderColor = isDotcare ? '#0d6efd' : '#198754';
-        const badgeBg = isDotcare ? '#e7f1ff' : '#e8f5e9';
-        const badgeColor = isDotcare ? '#0d6efd' : '#2e7d32';
-        const badgeText = isDotcare ? 'معتمد في DotCare' : 'تحليل عام';
-
         const card = document.createElement('div');
+        
         card.style.cssText = `
             background: #ffffff;
-            border-right: 5px solid ${borderColor};
-            border-radius: 8px;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+            border-right: 5px solid ${isDotcare ? '#059669' : '#0284c7'};
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
             margin-bottom: 12px;
-            padding: 14px 18px;
+            padding: 16px;
+            border-radius: 8px;
             direction: rtl;
             text-align: right;
-            font-family: inherit;
         `;
 
         card.innerHTML = `
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                <h4 style="margin: 0; color: #1a252f; font-size: 1.05rem; font-weight: 600;">${item.name}</h4>
-                <span style="background: ${badgeBg}; color: ${badgeColor}; font-size: 0.78rem; font-weight: bold; padding: 3px 9px; border-radius: 12px;">
-                    ${badgeText}
+                <h4 style="margin: 0; color: #1e293b; font-size: 1.05rem; font-weight: 700;">${item.name}</h4>
+                <span style="background: ${isDotcare ? '#ecfdf5' : '#f0f9ff'}; color: ${isDotcare ? '#059669' : '#0284c7'}; font-size: 0.78rem; font-weight: 600; padding: 3px 8px; border-radius: 12px;">
+                    ${isDotcare ? 'شروط معتمدة DotCare' : 'تحليل عام'}
                 </span>
             </div>
-            <p style="margin: 0; color: #495057; line-height: 1.6; font-size: 0.94rem;">
-                <strong style="color: #2c3e50;">شروط التحضير:</strong> ${item.notes}
+            <p style="margin: 0; color: #475569; line-height: 1.6; font-size: 0.93rem;">
+                <strong>شروط التحضير:</strong> ${item.notes}
             </p>
         `;
         resultsContainer.appendChild(card);
     });
-    }
+}
