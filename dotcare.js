@@ -1,6 +1,7 @@
 // ============================================================================
-// بنك تحاليل DotCare التخصصية الإضافية
+// بنك تحاليل DotCare التخصصية الإضافية (dotcare.js)
 // ============================================================================
+
 const DOTCARE_EXTRA_TESTS = [
     {
         name: "فوسفاتيز حمضي (ACID PHOSPHATASE) [204003]",
@@ -1040,8 +1041,10 @@ const DOTCARE_EXTRA_TESTS = [
 ];
 
 // ============================================================================
-// محرك المعالجة المسبقة للصورة (إزالة الحواف السوداء + رفع التباين + توضيح الحبر)
+// محرك المعالجة المسبقة للصورة (Canvas Preprocessing)
+// وظيفتها: قص السواد التلقائي + تعزيز الحبر المكتوب + معالجة التشويش والبكسلة
 // ============================================================================
+
 async function preprocessMedicalImage(file) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -1073,7 +1076,7 @@ async function preprocessMedicalImage(file) {
                 const imgData = ctx.getImageData(0, 0, w, h);
                 const data = imgData.data;
 
-                // كشف الحواف وعزل الإطارات السوداء
+                // كشف الحواف وعزل الإطارات السوداء الناتجة عن التصوير
                 let minX = w, minY = h, maxX = 0, maxY = 0;
                 const blackThreshold = 35;
 
@@ -1089,8 +1092,8 @@ async function preprocessMedicalImage(file) {
                     }
                 }
 
-                // رفع التباين لإبراز حبر الروشتة وعزل بهتان التصوير
-                const contrast = 40;
+                // رفع التباين لإبراز حبر الروشتة وتحديد الخطوط اليدوية الرديئة
+                const contrast = 42;
                 const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
 
                 for (let i = 0; i < data.length; i += 4) {
@@ -1116,7 +1119,7 @@ async function preprocessMedicalImage(file) {
                     0, 0, cropWidth, cropHeight
                 );
 
-                resolve(finalCanvas.toDataURL('image/jpeg', 0.9));
+                resolve(finalCanvas.toDataURL('image/jpeg', 0.92));
             };
             img.onerror = reject;
         };
@@ -1124,8 +1127,9 @@ async function preprocessMedicalImage(file) {
 }
 
 // ============================================================================
-// محرك الذكاء الاصطناعي لفحص الخط اليدوي والربط مع قاعدة التحاليل
+// محرك الذكاء الاصطناعي الشامل لقراءة الروشتات والمطابقة الهجينة (Hybrid Engine)
 // ============================================================================
+
 async function scanPrescriptionWithAI(imageFile, apiKey) {
     const loadingElem = document.querySelector('.loading') || document.querySelector('[class*="loading"]') || document.getElementById('loading');
     if (loadingElem) loadingElem.style.display = 'block';
@@ -1134,22 +1138,29 @@ async function scanPrescriptionWithAI(imageFile, apiKey) {
         const base64Url = await preprocessMedicalImage(imageFile);
         const rawBase64 = base64Url.split(',')[1];
 
-        // عينة من الأسماء لتوجيه النموذج
-        const knownTestNames = DOTCARE_EXTRA_TESTS.map(t => t.name).slice(0, 80).join(", ");
+        // قائمة إرشادية بأشهر أسماء التحاليل المعتمدة لتوجيه النموذج
+        const sampleKnownNames = DOTCARE_EXTRA_TESTS.map(t => t.name).slice(0, 80).join(", ");
 
         const systemPrompt = `
-أنت خبير قراءة روشتات طبية متخصص في فك الخطوط اليدوية المعقدة والسيئة للأطباء.
-مهمتك استخراج التحاليل الطبية المكتوبة باليد مهما كان الخط سيئاً، أو الصورة مقلوبة/أفقية/رأسية، أو باهتة ومبكسلة.
+أنت طبيب استشاري وخبير قراءة روشتات طبية متمكن من فك كل أشكال الخطوط السيئة، الشخبطة، الرموز المشوهة، والاختصارات الطبية اليدوية للأطباء.
 
-المرجع الطبي المعتمد لديك يشمل:
-${knownTestNames} ... وغيرها.
+المطلوب بدقة:
+1. اقرأ الصورة بغض النظر عن اتجاهها (مقلوبة، رأسية، مائلة، أو أفقية).
+2. استخرج **جميع** التحاليل الطبية والطلبات المخبرية المكتوبة في الصورة بلا استثناء حتى لو كانت مكتوبة بأحرف سريعة أو مقتضبة.
+3. اكتب الاسم الطبي القياسي والشائع للتحليل بالإنجليزية (مع ذكر الاسم بالعربي إذا أمكن).
+4. لا تتجاهل أي اختبار مكتوب حتى لو كان تحليلاً عاماً أو نادراً.
 
-تعليمات صارمة:
-1. اقرأ الصورة بغض النظر عن اتجاهها (مقلوبة، مائلة، رأسية).
-2. استخدم السياق الطبي لفك الرموز المكتوبة بخط سيئ وشخبطة الأطباء.
-3. أخرج النتيجة بتنسيق JSON فقط ولا تكتب أي كلام قبله أو بعده:
+أمثلة من قاعدة البيانات المعيارية للمختبر:
+${sampleKnownNames}
+
+أعد المخرجات بصيغة JSON حصراً بدون أي نصوص قبلها أو بعدها:
 {
-  "matches": ["اسم التحليل أو الكود المكتشف بالإنجليزية أو العربية"]
+  "detected_tests": [
+    {
+      "standard_name": "الاسم الطبي القياسي للتحليل بالإنجليزي أو العربي",
+      "raw_text": "الرمز أو الكلمة كما ظهرت بالروشتة"
+    }
+  ]
 }
 `;
 
@@ -1172,72 +1183,102 @@ ${knownTestNames} ... وغيرها.
 
         const resData = await response.json();
         const outputJson = JSON.parse(resData.candidates[0].content.parts[0].text);
-        const detectedKeywords = outputJson.matches || [];
+        const detectedList = outputJson.detected_tests || [];
 
-        // مطابقة الكلمات المكتشفة مع مصفوفة DOTCARE_EXTRA_TESTS عبر الـ regex
-        const matchedTests = [];
-        DOTCARE_EXTRA_TESTS.forEach(dbItem => {
-            for (const word of detectedKeywords) {
-                if (dbItem.test(word) || word.toLowerCase().includes(dbItem.name.toLowerCase())) {
-                    if (!matchedTests.some(r => r.name === dbItem.name)) {
-                        matchedTests.push({
-                            name: dbItem.name,
-                            notes: dbItem.getNotes()
-                        });
-                    }
-                    break;
+        // منطق المطابقة الهجين (البحث في قاعدة DotCare أولاً، ثم التحويل التلقائي للتحاليل العامة)
+        const finalResults = [];
+
+        detectedList.forEach(item => {
+            const queryName = item.standard_name || item.raw_text;
+            
+            // محاولة إيجاد تطابق داخل بنك DotCare
+            const matchedDb = DOTCARE_EXTRA_TESTS.find(dbItem => 
+                dbItem.test(queryName) || 
+                (item.raw_text && dbItem.test(item.raw_text)) ||
+                queryName.toLowerCase().includes(dbItem.name.toLowerCase())
+            );
+
+            if (matchedDb) {
+                // وجد في DotCare
+                if (!finalResults.some(r => r.name === matchedDb.name)) {
+                    finalResults.push({
+                        name: matchedDb.name,
+                        notes: matchedDb.getNotes(),
+                        source: 'dotcare'
+                    });
+                }
+            } else {
+                // غير موجود في بنك البيانات -> يتم إخراجه فوراً مع شروط عامة
+                if (!finalResults.some(r => r.name.toLowerCase() === queryName.toLowerCase())) {
+                    finalResults.push({
+                        name: queryName,
+                        notes: "سيرم / عينة عادية، لا توجد شروط تحضير خاصة أو صيام مسبق لهذا التحليل ما لم يطلب الطبيب المعالج غير ذلك.",
+                        source: 'general'
+                    });
                 }
             }
         });
 
-        renderPrescriptionResults(matchedTests, detectedKeywords);
+        renderPrescriptionResults(finalResults);
 
     } catch (err) {
-        console.error("Scanning Error:", err);
-        alert("حدث خطأ أثناء فحص الروشتة. يرجى التأكد من الـ API Key وجودة الصورة.");
+        console.error("Prescription Scan Error:", err);
+        alert("حدث خطأ أثناء فحص الروشتة. يرجى التحقق من صحة مفتاح API وجودة اتصال الإنترنت.");
     } finally {
         if (loadingElem) loadingElem.style.display = 'none';
     }
 }
 
 // ============================================================================
-// عرض النتائج في واجهة الموقع
+// عرض النتائج في واجهة المستخدم (UI Rendering)
 // ============================================================================
-function renderPrescriptionResults(matchedTests, rawKeywords) {
-    const resultsContainer = document.querySelector('.results') || document.querySelector('[class*="result"]') || document.getElementById('resultsContainer');
+
+function renderPrescriptionResults(matchedTests) {
+    const resultsContainer = document.querySelector('.results') || document.querySelector('[class*="result"]') || document.getElementById('resultsContainer') || document.getElementById('results');
     if (!resultsContainer) return;
 
     resultsContainer.innerHTML = '';
 
-    if (matchedTests.length === 0) {
+    if (!matchedTests || matchedTests.length === 0) {
         resultsContainer.innerHTML = `
-            <div style="padding: 15px; background: #fff3cd; color: #856404; border-radius: 8px; direction: rtl; text-align: right;">
-                لم نتمكن من مطابقة شروط DotCare بدقة. الكلمات المكتشفة مبدئياً: 
-                <b>${rawKeywords.join(', ') || 'لا توجد نصوص واضحة'}</b>
+            <div style="padding: 16px; background: #fff3cd; color: #856404; border: 1px solid #ffeeba; border-radius: 8px; direction: rtl; text-align: right; font-family: inherit;">
+                لم يتم رصد أي تحاليل واضحة في الروشتة. يرجى التأكد من تسليط الكاميرا على موضع الكتابة بوضوح.
             </div>
         `;
         return;
     }
 
     matchedTests.forEach(item => {
+        const isDotcare = item.source === 'dotcare';
+        const borderColor = isDotcare ? '#0d6efd' : '#198754';
+        const badgeBg = isDotcare ? '#e7f1ff' : '#e8f5e9';
+        const badgeColor = isDotcare ? '#0d6efd' : '#2e7d32';
+        const badgeText = isDotcare ? 'معتمد في DotCare' : 'تحليل عام';
+
         const card = document.createElement('div');
         card.style.cssText = `
             background: #ffffff;
-            border-right: 5px solid #007bff;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+            border-right: 5px solid ${borderColor};
+            border-radius: 8px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.06);
             margin-bottom: 12px;
-            padding: 15px;
-            border-radius: 6px;
+            padding: 14px 18px;
             direction: rtl;
             text-align: right;
+            font-family: inherit;
         `;
 
         card.innerHTML = `
-            <h4 style="margin: 0 0 8px 0; color: #007bff; font-size: 1.05rem;">${item.name}</h4>
-            <p style="margin: 0; color: #333; line-height: 1.6; font-size: 0.95rem;">
-                <strong>تعليمات التحضير:</strong> ${item.notes}
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <h4 style="margin: 0; color: #1a252f; font-size: 1.05rem; font-weight: 600;">${item.name}</h4>
+                <span style="background: ${badgeBg}; color: ${badgeColor}; font-size: 0.78rem; font-weight: bold; padding: 3px 9px; border-radius: 12px;">
+                    ${badgeText}
+                </span>
+            </div>
+            <p style="margin: 0; color: #495057; line-height: 1.6; font-size: 0.94rem;">
+                <strong style="color: #2c3e50;">شروط التحضير:</strong> ${item.notes}
             </p>
         `;
         resultsContainer.appendChild(card);
     });
-}
+    }
