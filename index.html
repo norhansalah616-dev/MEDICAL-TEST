@@ -9,6 +9,18 @@
     
     <!-- الربط مع ملف التحاليل الإضافية التخصصية DotCare -->
     <script src="dotcare.js"></script>
+    <script>
+  const fileInput = document.querySelector('input[type="file"]');
+  if (fileInput) {
+      fileInput.addEventListener('change', function(e) {
+          if (this.files && this.files[0]) {
+              const apiKey = "ضع_مفتاح_API_الخاص_بك_هنا";
+              scanPrescriptionWithAI(this.files[0], apiKey);
+          }
+      });
+  }
+ </script>
+
 
     <style>
         :root {
