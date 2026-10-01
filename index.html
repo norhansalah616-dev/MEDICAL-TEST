@@ -222,7 +222,7 @@
             <div class="rotate-bar">
                 <button class="btn-sub" onclick="rotateManual(-90)">🔄 تدوير يسار</button>
                 <button class="btn-sub" onclick="rotateManual(90)">🔄 تدوير يمين</button>
-                <button class="btn-sub" style="background: var(--accent);" onclick="startDirectPriorityScan()">🔍 إعادة الفحص</button>
+                <button class="btn-sub" style="background: var(--accent);" onclick="startHybridSmartScan()">🔍 إعادة الفحص</button>
             </div>
         </div>
     </div>
@@ -231,7 +231,7 @@
         <div class="loading-card">
             <div class="spinner"></div>
             <h3>جاري الفحص...</h3>
-            <p id="loadingMsg" style="font-size: 0.85rem; color: #b2dfdb;">البحث في قاعدة بيانات DotCare أولاً...</p>
+            <p id="loadingMsg" style="font-size: 0.85rem; color: #b2dfdb;">تحليل الروشتة ومطابقة شروط DotCare...</p>
         </div>
     </div>
 
@@ -433,7 +433,7 @@
                 currentAngle = 0;
                 applyCanvasTransform();
                 document.getElementById('previewContainer').style.display = 'block';
-                startDirectPriorityScan();
+                startHybridSmartScan();
             };
             rawImg.src = e.target.result;
         };
@@ -468,70 +468,75 @@
         document.getElementById('imagePreview').src = cvs.toDataURL();
     }
 
-    // محرك الفحص: البحث في DotCare أولاً ثم التحول لـ Gemini عند الحاجة
-    async function startDirectPriorityScan() {
+    // =========================================================================
+    // ⚡ المحرك الهجين الذكي: Gemini يستخرج الأسماء + DotCare يطابق الشروط الرسمية
+    // =========================================================================
+    async function startHybridSmartScan() {
         const overlay = document.getElementById('loadingOverlay');
         const msg = document.getElementById('loadingMsg');
         overlay.style.display = 'flex';
 
         const cvs = document.getElementById('procCanvas');
+        const base64Data = cvs.toDataURL('image/jpeg', 0.85).split(',')[1];
+        const mimeType = 'image/jpeg';
         const isFemale = document.querySelector('input[name="gender"]:checked').value === 'أنثى';
 
-        // البحث السريع المحلي عبر Tesseract لمطابقة بنك DotCare أولاً
-        msg.innerText = "⚡ جاري البحث السريع في بنك تحاليل DotCare...";
-        let dotCareFound = false;
+        // 1. استخراج أسماء التحاليل المكتوبة بالروشتة عبر Gemini Vision
+        msg.innerText = "🔍 جاري قراءة أسماء واختصارات التحاليل بالذكاء الاصطناعي...";
+        const detectedTests = await extractTestNamesViaGemini(base64Data, mimeType);
 
-        try {
-            const result = await Tesseract.recognize(cvs, 'eng');
-            const extractedText = result.data.text;
+        if (detectedTests && detectedTests.length > 0) {
+            msg.innerText = "⚡ جاري استدعاء شروط التحضير من بنك DotCare...";
+            
+            const finalResults = [];
 
-            const matched = medicalRules.filter(rule => rule.test(extractedText));
+            detectedTests.forEach(item => {
+                const queryText = (item.raw_name + " " + (item.code || "")).trim();
+                
+                // مطابقة التحليل مباشرة مع بنك قواعد DotCare
+                const dotCareMatch = medicalRules.find(rule => rule.test(queryText));
 
-            if (matched.length > 0) {
-                const formatted = matched.map(item => ({
-                    test_name: item.name,
-                    instructions: item.getNotes(isFemale),
-                    is_critical_female: item.name.includes("Vitamin D") && isFemale
-                }));
-                displayResults(formatted, "⚡ تم التطابق الفوري عبر قاعدة بيانات نظام DotCare");
-                dotCareFound = true;
-            }
-        } catch (e) {
-            console.warn("DotCare Local Scanner warning:", e);
-        }
+                if (dotCareMatch) {
+                    finalResults.push({
+                        test_name: dotCareMatch.name,
+                        instructions: dotCareMatch.getNotes(isFemale),
+                        is_critical_female: dotCareMatch.name.includes("Vitamin D") && isFemale
+                    });
+                } else {
+                    // تحليل احتياطي في حال كان خارج قواعد الدوت كير المسجلة
+                    finalResults.push({
+                        test_name: item.raw_name,
+                        instructions: item.fallback_instructions || "لا توجد شروط تحضير خاصة مسجلة في نظام DotCare.",
+                        is_critical_female: /vitamin\s*d|25-oh/i.test(item.raw_name) && isFemale
+                    });
+                }
+            });
 
-        // إذا لم يعثر على تطابق في القواعد المحلية، يتحول لمحرك Gemini Vision
-        if (!dotCareFound) {
-            msg.innerText = "🔍 تحليل دقيق بالذكاء الاصطناعي (Gemini Vision)...";
-            const base64Data = cvs.toDataURL('image/jpeg', 0.85).split(',')[1];
-            const mimeType = 'image/jpeg';
-            const aiSuccess = await tryGeminiVision(base64Data, mimeType);
-
-            if (!aiSuccess) {
-                displayResults([], "لم يتم العثور على تحاليل مطابقة، يرجى تدوير الصورة لتصبح أفقية والضغط على (إعادة الفحص).");
-            }
+            displayResults(finalResults, "✨ تم التعرف عبر Gemini ومطابقة الشروط من بنك DotCare");
+        } else {
+            // الماسح المحلي الاحتياطي في حال تعذر الاتصال بالإنترنت
+            msg.innerText = "التحول للماسح المحلي الاحتياطي...";
+            await runLocalTesseractFallback();
         }
 
         overlay.style.display = 'none';
     }
 
-    async function tryGeminiVision(base64Image, mimeType) {
-        const gender = document.querySelector('input[name="gender"]:checked').value;
+    // دالة استخراج أسماء الفحوصات الطبية حصراً بواسطة Gemini
+    async function extractTestNamesViaGemini(base64Image, mimeType) {
         const promptText = `
-أنت استشاري تحاليل طبية وخبير بنظام DotCare.
+أنت خبير في قراءة الروشتات الطبية والفحوصات المعملية.
 المهمة:
-1. افحص الصورة بدقة واقرأ كافة التحاليل المكتوبة فيها (بما في ذلك خط اليد أو المطبوع أو المائل أو الباهت).
-2. طابق الفحوصات مع قواعد التحضير المخبرية (صيام، مواعيد سحب، شروط سوائل، احترازات أدوية).
-3. حالة المريض: [${gender}].
-   - إذا تم رصد تحليل Vitamin D والحالة (أنثى): ضع تنبيهاً واضحاً (لا يتم السحب أثناء فترة الدورة الشهرية، ويتم السحب بعد الانتهاء منها بـ 48 ساعة).
-   - إذا كان التحليل يتطلب صياماً حدد ساعاته وشرب الماء فقط.
+1. اقرأ الصورة بدقة واستخرج قائمة بأسماء كافة التحاليل الطبية المكتوبة (سواء خط يد أو مطبوع أو اختصارات مثل CBC, FBS, 2H PP, TSH, Vit D, SGPT, Urea).
+2. اكتب الاسم الإنجليزي الواضح والاختصار لكل فحص.
+3. اكتب شروطاً عامة ومختصرة كبديل احتياطي فقط في حال عدم وجود الفحص بالنظام المحلي.
 
-أخرج النتيجة بصيغة JSON Array نقية دون أي markdown:
+أخرج النتيجة بصيغة JSON Array نقية فقط دون أي شروحات أو كتل markdown:
 [
   {
-    "test_name": "اسم الفحص بالعربية والإنجليزية واختصاره",
-    "instructions": "شروط التحضير والسحب بالتفصيل",
-    "is_critical_female": true
+    "raw_name": "اسم التحليل واختصاره بالإنجليزية",
+    "code": "كود التحليل إن وُجد بالصورة",
+    "fallback_instructions": "شروط مختصرة جداً"
   }
 ]`;
 
@@ -559,15 +564,39 @@
                     text = text.replace(/```json/g, '').replace(/```/g, '').trim();
                     const results = JSON.parse(text);
                     if (Array.isArray(results) && results.length > 0) {
-                        displayResults(results, "✨ تم الفحص بالذكاء الاصطناعي (Gemini Vision)");
-                        return true;
+                        return results;
                     }
                 }
             } catch (err) {
-                console.warn("AI Engine attempt failed:", err);
+                console.warn("AI Extraction failed on model " + model + ":", err);
             }
         }
-        return false;
+        return null;
+    }
+
+    // الماسح المحلي الاحتياطي (Tesseract OCR)
+    async function runLocalTesseractFallback() {
+        const cvs = document.getElementById('procCanvas');
+        try {
+            const result = await Tesseract.recognize(cvs, 'eng');
+            const extractedText = result.data.text;
+
+            const isFemale = document.querySelector('input[name="gender"]:checked').value === 'أنثى';
+            const matched = medicalRules.filter(rule => rule.test(extractedText));
+
+            if (matched.length > 0) {
+                const formatted = matched.map(item => ({
+                    test_name: item.name,
+                    instructions: item.getNotes(isFemale),
+                    is_critical_female: item.name.includes("Vitamin D") && isFemale
+                }));
+                displayResults(formatted, "🛡️ تم الفحص عبر المحرك المحلي الاحتياطي وقاعدة DotCare");
+            } else {
+                displayResults([], "المحرك المحلي لم يكتشف تحاليل واضحة، يرجى تعديل زاوية الصورة وإعادة الفحص.");
+            }
+        } catch (e) {
+            alert("تعذر قراءة الصورة بالوسيلتين. يرجى التأكد من جودة الصورة.");
+        }
     }
 
     function displayResults(tests, badgeText) {
